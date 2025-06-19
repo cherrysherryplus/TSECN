@@ -12,7 +12,7 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 import lpips
 import pyiqa
 
-
+# pytorch_msssim.ssim(pred_img, real_img, data_range = data_range)?
 class Measure():
     def __init__(self, net='alex', use_gpu=False):
         self.device = 'cuda' if use_gpu else 'cpu'
@@ -78,9 +78,10 @@ def measure_dirs(dirA, dirB, use_gpu, verbose=False, type='png'):
 
     t_init = time.time()
 
-    paths_A = fiFindByWildcard(os.path.join(dirA, f'*.{type}'))
+    # .{type}
+    paths_A = fiFindByWildcard(os.path.join(dirA, f'*'))
     # NOTE 1104: Only extract images end with '_fakeB'
-    paths_B = fiFindByWildcard(os.path.join(dirB, f'*_fake_B.{type}'))
+    paths_B = fiFindByWildcard(os.path.join(dirB, f'*'))
     print(paths_A, paths_B)
     # st()
 
@@ -121,7 +122,7 @@ def measure_dirs_rf(dirB, use_gpu, verbose=False, type='png'):
         vprint = lambda x: None
     t_init = time.time()
     # NOTE 1104: Only extract images end with '_fakeB'
-    paths_B = fiFindByWildcard(os.path.join(dirB, f'*_fake_B.{type}'))
+    paths_B = fiFindByWildcard(os.path.join(dirB, f'*.{type}'))
 
     results = []
     # st()
@@ -138,7 +139,7 @@ def measure_dirs_rf(dirB, use_gpu, verbose=False, type='png'):
     mean_brisque = np.mean([result['brisque'] for result in results])
     mean_ilniqe = np.mean([result['ilniqe'] for result in results])
 
-    vprint(f"Final Result: {format_result_rf(mean_niqe, mean_brisque, mean_ilniqe)}, {time.time() - t_init:0.1f}s")
+    vprint(f"Final Result: {format_result_rf(mean_niqe, mean_ilniqe, mean_brisque)}, {time.time() - t_init:0.1f}s")
     return mean_niqe, mean_brisque, mean_ilniqe
 
 

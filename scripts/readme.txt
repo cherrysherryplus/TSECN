@@ -1,0 +1,5 @@
+1.Running scripts in "scripts/eval_onec" can generate images at multiple exposure levels and save them in the "results_onec/TSECN/<dataset_name>" folder. In the aforementioned scripts, “start”, “end”, and "stop" are parameters to control the range of target exposure levels.
+2.Running scripts in "scripts/analyze_onec" can produce best results for each image in the "results_onec/TSECN/<dataset_name>" folder. The best images are saved in the "results/TSECN/<dataset_name>" folder.
+3.Running script "benchmark_fps.sh" can evaluate speed of the full model with input images at 256*256.
+4.Running scripts in "scripts/train" performs training with the specified configurations.
+5.Running script "evaluate_metrics.sh" can evaluate results with reference-based or reference-free metrics according to the specified dataset name. After execution, evaluation results are appended to the tail of an txt file named "<method_name>_eval_metrics_results.txt" in the "results" folder.

@@ -2,6 +2,7 @@ import argparse
 import os
 from util import util
 import torch
+import time
 
 class BaseOptions():
     def __init__(self):
@@ -57,7 +58,6 @@ class BaseOptions():
         self.parser.add_argument('--IN_vgg', action='store_true', help='vgg_loss_patch use an individual vgg that differs from vgg_loss')
         self.parser.add_argument('--use_avgpool', type=float, default=0, help='use average pooling')
         self.parser.add_argument('--instance_norm', type=float, default=0, help='use instance normalization')
-        self.parser.add_argument('--syn_norm', action='store_true', help='use synchronize batch normalization')
         self.parser.add_argument('--tanh', action='store_true', help='tanh')
         self.parser.add_argument('--linear', action='store_true', help='tanh')
         self.parser.add_argument('--new_lr', action='store_true', help='tanh')
@@ -79,13 +79,14 @@ class BaseOptions():
         self.parser.add_argument('--norm_attention', action='store_true', help='normalize attention map')
         self.parser.add_argument('--vary', type=int, default=1, help='use light data augmentation')
         self.parser.add_argument('--lighten', action='store_true', help='normalize attention map')
-        self.parser.add_argument('--i3c', action='store_true', help='replace original illumination constraint initialization with I3C')
+        self.parser.add_argument('--cerm', action='store_true', help='replace original illumination constraint initialization with cerm')
         self.parser.add_argument('--tpe', action='store_true', help='attach a coarse enhancement before EnlightenGAN')
-        self.parser.add_argument('--i3c_again', action='store_true', help='update illumination constraint')
+        self.parser.add_argument('--cerm_again', action='store_true', help='update illumination constraint')
         self.parser.add_argument('--concat_gray', action='store_true', help='wheather to concat gray in EnlightenGAN')
-        self.parser.add_argument('--not_use_stage1_as_residual', action='store_true', help='use original low-light input as residual')
         self.parser.add_argument('--tv', type=float, default=0, help='use tv loss for fakeB')
         self.parser.add_argument('--color', type=float, default=0, help='use color loss for fakeB')
+        self.parser.add_argument('--oa', type=float, default=0, help='use oa loss for fakeB')
+        self.parser.add_argument('--nc', type=int, default=32, help='# of filters in first conv layer for Baseline_enlarged')
         self.initialized = True
 
     def parse(self):
@@ -114,11 +115,34 @@ class BaseOptions():
 
         # save to the disk
         expr_dir = os.path.join(self.opt.checkpoints_dir, self.opt.name)
-        os.makedirs(expr_dir, exist_ok=True)
-        file_name = os.path.join(expr_dir, 'opt.txt')
+        # make a dir to save opt.txt files
+        os.makedirs(os.path.join(expr_dir, 'opts'), exist_ok=True)
+        timestamp = time.strftime('%Y%m%d-%H%M%S')
+        file_name = os.path.join(expr_dir, 'opts', f'opt_{timestamp}.txt')
         with open(file_name, 'wt') as opt_file:
             opt_file.write('------------ Options -------------\n')
             for k, v in sorted(args.items()):
                 opt_file.write('%s: %s\n' % (str(k), str(v)))
             opt_file.write('-------------- End ----------------\n')
+        return self.opt
+
+
+    # without print to console and save to disk
+    def parse_simple(self):
+        if not self.initialized:
+            self.initialize()
+        self.opt = self.parser.parse_args()
+        self.opt.isTrain = self.isTrain   # train or test
+
+        str_ids = self.opt.gpu_ids.split(',')
+        self.opt.gpu_ids = []
+        for str_id in str_ids:
+            id = int(str_id)
+            if id >= 0:
+                self.opt.gpu_ids.append(id)
+        
+        # set gpu ids
+        if len(self.opt.gpu_ids) > 0:
+            torch.cuda.set_device(self.opt.gpu_ids[0])
+            
         return self.opt

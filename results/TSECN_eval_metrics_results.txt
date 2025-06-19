@@ -1,0 +1,8 @@
+===LOL-v1-real===
+===> Avg.PSNR: 22.0712 dB 
+===> Avg.SSIM: 0.7304 
+===> Avg.LPIPS: 0.2986 
+===LIME===
+===> Avg.NIQE: 3.5269 
+===> Avg.ILNIQE: 24.4781 
+===> Avg.BRISQUE: 9.7034 

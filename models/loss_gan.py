@@ -41,7 +41,7 @@ class GANLoss(nn.Module):
 
     def __call__(self, input, target_is_real):
         target_tensor = self.get_target_tensor(input, target_is_real)
-        return self.loss(input, target_tensor)
+        return self.loss(input, target_tensor) + 1e-8
 
 
 class DiscLossWGANGP():

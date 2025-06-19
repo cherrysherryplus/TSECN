@@ -106,7 +106,9 @@ class PerceptualLoss(nn.Module):
         img_fea = vgg(img_vgg, self.opt)
         target_fea = vgg(target_vgg, self.opt)
         if self.opt.no_vgg_instance:
-            return torch.mean((img_fea - target_fea) ** 2)
+            # return torch.mean((img_fea - target_fea) ** 2)
+            return torch.mean(torch.abs((img_fea - target_fea)))
+
         else:
             # NOTE 1108 原始的是平方
             # return torch.mean((self.instancenorm(img_fea) - self.instancenorm(target_fea)) ** 2)

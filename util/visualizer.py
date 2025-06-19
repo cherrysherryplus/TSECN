@@ -1,5 +1,7 @@
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
+from pdb import set_trace as st
 import os
 import ntpath
 import time
@@ -8,6 +10,11 @@ from . import html
 
 
 def save_image(image_numpy, image_path):
+    # NOTE 1116
+    # st()
+    # _min = np.min(image_numpy)
+    # _max = np.max(image_numpy)
+    # normalized_image = (image_numpy - _min) * (255.0 / (_max - _min))
     image_pil = Image.fromarray(image_numpy)
     image_pil.save(image_path)
 
@@ -136,9 +143,14 @@ class Visualizer():
         links = []
 
         for label, image_numpy in visuals.items():
-            image_name = '%s_%s.png' % (name, label)
+            image_name = '%s/%s.png' % (label, name)
+            os.makedirs(os.path.join(image_dir, label), exist_ok=True)
             save_path = os.path.join(image_dir, image_name)
-            save_image(image_numpy, save_path)
+            # st()
+            if label=='gamma_attn':
+                plt.imsave(save_path, image_numpy, cmap='jet')
+            else:
+                save_image(image_numpy, save_path)
 
             ims.append(image_name)
             txts.append(label)

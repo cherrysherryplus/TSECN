@@ -5,12 +5,14 @@ import util.util as util
 from util.image_pool import ImagePool
 from .base_model import BaseModel
 import random
+import numpy as np
+from pdb import set_trace as st
 from . import networks
 from . import loss_vgg
 from . import loss_gan
-from .loss_first_stage import C_loss,P_loss,R_loss
 from .loss_tv import tv_loss
 from .loss_color import color_loss
+from .loss_oa import OutlierAwareLoss
 
 
 class SingleModel(BaseModel):
@@ -73,12 +75,15 @@ class SingleModel(BaseModel):
                 self.criterionCycle = torch.nn.L1Loss()
             self.criterionL1 = torch.nn.L1Loss()
             self.criterionIdt = torch.nn.L1Loss()
+            # NOTE newly defined loss
+            self.criterionOA = OutlierAwareLoss()
             # initialize optimizers
             self.optimizer_G = torch.optim.Adam(self.netG_A.parameters(),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.optimizer_D_A = torch.optim.Adam(self.netD_A.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_D_A = torch.optim.Adam(self.netD_A.parameters(), lr=opt.lr * opt.lr_factor, betas=(opt.beta1, 0.999))
+            # 0.01
             if self.opt.patchD:
-                self.optimizer_D_P = torch.optim.Adam(self.netD_P.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
+                self.optimizer_D_P = torch.optim.Adam(self.netD_P.parameters(), lr=opt.lr * opt.lr_factor, betas=(opt.beta1, 0.999))
 
         print('---------- Networks initialized -------------')
         networks.print_network(self.netG_A)
@@ -114,7 +119,6 @@ class SingleModel(BaseModel):
                 self.real_A = self.real_A + self.noise
             if self.opt.input_linear:
                 self.real_A = (self.real_A - torch.min(self.real_A))/(torch.max(self.real_A) - torch.min(self.real_A))
-            # print(np.transpose(self.real_A.data[0].cpu().float().numpy(),(1,2,0))[:2][:2][:])
             if self.opt.skip == 1:
                 self.fake_B, self.latent_real_A = self.netG_A.forward(self.real_A, self.real_A_gray)
             else:
@@ -133,17 +137,26 @@ class SingleModel(BaseModel):
                 self.real_A = (self.real_A - torch.min(self.real_A))/(torch.max(self.real_A) - torch.min(self.real_A))
             if self.opt.skip == 1:
                 if self.opt.tpe:
-                    # NOTE 1108 , _, _, _, _, _
-                    self.fake_B, self.latent_real_A, self.stage1 = self.netG_A.forward(self.real_A, self.real_A_gray)
+                    self.fake_B, self.latent_real_A, self.stage1, self.stage1_gray = self.netG_A.forward(self.real_A, self.real_A_gray)
+                    gray = util.atten2im(self.real_A_gray.data)
                     self.fake_B += (exposure_level-1) * self.latent_real_A
                 else:
-                    self.fake_B, self.latent_real_A = self.netG_A.forward(self.real_A, self.real_A_gray)
+                    self.fake_B, self.latent_real_A, self.real_A_gray = self.netG_A.forward(self.real_A, self.real_A_gray)
+                    self.fake_B += (exposure_level-1) * self.latent_real_A
             else:
                 self.fake_B = self.netG_A.forward(self.real_A, self.real_A_gray)
             real_A = util.tensor2im(self.real_A.data)
             fake_B = util.tensor2im(self.fake_B.data)
-            return OrderedDict([('real_A', real_A), ('fake_B', fake_B)])
-
+            # only for latent visualization
+            latent_real = util.tensor2im(self.latent_real_A.data)
+            latent_show = util.latent2im(self.latent_real_A.data)
+            # st()
+            if self.opt.tpe:
+                stage1 = util.tensor2im(self.stage1)
+                return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('stage1', stage1), ('latent_real', latent_real), ('latent_show', latent_show), ('gray', gray)])
+            else:
+                return OrderedDict([('real_A', real_A), ('fake_B', fake_B)])
+            
     # get image paths
     def get_image_paths(self):
         return self.image_paths
@@ -205,15 +218,7 @@ class SingleModel(BaseModel):
             self.real_A = (self.real_A - torch.min(self.real_A))/(torch.max(self.real_A) - torch.min(self.real_A))
         if self.opt.skip == 1:
             if self.opt.tpe:
-                # NOTE 1108 , self.L1, self.R1, self.R2, self.X1, self.im1
-                self.fake_B, self.latent_real_A, self.stage1 = self.netG_A.forward(self.real_img, self.real_A_gray)
-                # NOTE 1112 not good; 
-                # if self.isTrain:
-                #     # 0-2
-                #     # exposure_level = random.uniform(0, 2.0)
-                #     # -1-1
-                #     exposure_level = random.uniform(-1.0, 1.0)
-                #     self.fake_B += (exposure_level-1) * self.latent_real_A
+                self.fake_B, self.latent_real_A, self.stage1, self.gray = self.netG_A.forward(self.real_img, self.real_A_gray)
             else:
                 self.fake_B, self.latent_real_A = self.netG_A.forward(self.real_img, self.real_A_gray)
         else:
@@ -301,7 +306,7 @@ class SingleModel(BaseModel):
                 if not self.opt.IN_vgg:
                     loss_vgg_patch = self.vgg_loss.compute_vgg_loss(self.vgg, 
                     self.fake_patch, self.input_patch) * self.opt.vgg
-                else:
+                else: 
                     loss_vgg_patch = self.vgg_patch_loss.compute_vgg_loss(self.vgg, 
                     self.fake_patch, self.input_patch) * self.opt.vgg
                 if self.opt.patchD_3 > 0:
@@ -316,20 +321,22 @@ class SingleModel(BaseModel):
                 else:
                     self.loss_vgg_b += loss_vgg_patch
             self.loss_G = self.loss_G_A + self.loss_vgg_b*vgg_w
-        # NOTE 1108
-        # loss1 = C_loss(self.R1, self.R2)
-        # loss2 = R_loss(self.L1, self.R1, self.im1, self.X1)
-        # loss3 = P_loss(self.im1, self.X1)
-        # self.first_stage_loss  =  loss1 * 1 + loss2 * 1 + loss3 * 500
-        # self.loss_G  += self.first_stage_loss
-        # NOTE 1110 tv loss
+        # NOTE newly defined losses
         if self.opt.tv > 0:
-            self.loss_tv = tv_loss(self.fake_B)
+            self.loss_tv = tv_loss(self.fake_B) + tv_loss(self.stage1)
+            for i in range(self.opt.patchD_3):
+                self.loss_tv += tv_loss(self.fake_patch_1[i]) * 0.2
             self.loss_G = self.loss_G + self.opt.tv * self.loss_tv
-        # NOTE 1113 color loss
-        if self.opt.color:
-            self.loss_color =  2*color_loss(self.fake_B) + color_loss(self.stage1)
+        if self.opt.color > 0:
+            self.loss_color = color_loss(self.fake_B) + color_loss(self.stage1)
+            for i in range(self.opt.patchD_3):
+                self.loss_color += color_loss(self.fake_patch_1[i]) * 0.2
             self.loss_G = self.loss_G + self.opt.color * self.loss_color
+        if self.opt.oa > 0:
+            self.loss_oa = self.criterionOA(self.fake_B, self.real_B) + self.criterionOA(self.stage1, self.real_B)
+            for i in range(self.opt.patchD_3):
+                self.loss_oa += self.criterionOA(self.fake_patch_1[i], self.real_patch_1[i]) * 0.2
+            self.loss_G = self.loss_G + self.opt.oa * self.loss_oa
         self.loss_G.backward()
 
     def optimize_parameters(self, epoch):
@@ -361,20 +368,19 @@ class SingleModel(BaseModel):
         G_A = self.loss_G_A.item()
         
         loss_dict = OrderedDict([('D_A', D_A), ('G_A', G_A), ("D_P", D_P)])
-        # NOTE 1108
-        # stage1_loss = self.first_stage_loss.item()
-        # NOTE 1110 tv loss
+        # NOTE newly defined losses
         if self.opt.tv > 0:
-            tv = self.loss_tv.data.item()/self.opt.tv if self.opt.tv > 0 else 0
-            loss_dict['tv'] = tv
-        # NOTE 1113 color loss
+            tv = self.loss_tv.data.item() if self.opt.tv > 0 else 0
+            loss_dict['tv'] = tv * self.opt.tv
         if self.opt.color > 0:
-            color = self.loss_color.data.item() / self.opt.color if self.opt.color > 0 else 0
-            loss_dict['color'] = color
+            color = self.loss_color.data.item() if self.opt.color > 0 else 0
+            loss_dict['color'] = color * self.opt.color
+        if self.opt.oa > 0:
+            oa = self.loss_oa.data.item() if self.opt.oa > 0 else 0
+            loss_dict['oa'] = oa * self.opt.oa
         if self.opt.vgg > 0:
-            vgg = self.loss_vgg_b.data.item()/self.opt.vgg if self.opt.vgg > 0 else 0
-            loss_dict['vgg'] = vgg
-        # NOTE 1108 , ("1st loss", stage1_loss)
+            vgg = self.loss_vgg_b.data.item() if self.opt.vgg > 0 else 0
+            loss_dict['vgg'] = vgg * self.opt.vgg
         return loss_dict
         
 
@@ -384,7 +390,7 @@ class SingleModel(BaseModel):
         real_B = util.tensor2im(self.real_B.data)
         if self.opt.tpe:
             # stage1
-            self.stage1 = util.latent2im(self.stage1.data)
+            stage1 = util.tensor2im(self.stage1.data)
         if self.opt.skip > 0:
             latent_real_A = util.tensor2im(self.latent_real_A.data)
             latent_show = util.latent2im(self.latent_real_A.data)
@@ -402,7 +408,7 @@ class SingleModel(BaseModel):
                         if self.opt.tpe:
                             return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('latent_real_A', latent_real_A),
                                     ('latent_show', latent_show), ('real_B', real_B), ('real_patch', real_patch),
-                                    ('fake_patch', fake_patch), ('input_patch', input_patch), ('self_attention', self_attention), ('stage1',self.stage1)])
+                                    ('fake_patch', fake_patch), ('input_patch', input_patch), ('self_attention', self_attention), ('stage1',stage1)])
                         else:
                             return OrderedDict([('real_A', real_A), ('fake_B', fake_B), ('latent_real_A', latent_real_A),
                                     ('latent_show', latent_show), ('real_B', real_B), ('real_patch', real_patch),
@@ -448,10 +454,10 @@ class SingleModel(BaseModel):
             lrd = self.opt.lr / self.opt.niter_decay
             lr = self.old_lr - lrd
         for param_group in self.optimizer_D_A.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = lr * self.opt.lr_factor
         if self.opt.patchD:
             for param_group in self.optimizer_D_P.param_groups:
-                param_group['lr'] = lr
+                param_group['lr'] = lr * self.opt.lr_factor
         for param_group in self.optimizer_G.param_groups:
             param_group['lr'] = lr
 

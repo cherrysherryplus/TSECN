@@ -1,13 +1,8 @@
 import torch
 import torch.nn as nn
-from torch.nn import init
-import functools
-from torch.autograd import Variable
 import torch.nn.functional as F
 import numpy as np
-from lib.nn import SynchronizedBatchNorm2d as SynBN2d
-from pdb import set_trace as st
-from data.unaligned_dataset import i3c_batch
+# from pdb import set_trace as st
 
 
 ###############################################################################
@@ -52,9 +47,11 @@ def pad_tensor(input):
 
     return input, pad_left, pad_right, pad_top, pad_bottom
 
+
 def pad_tensor_back(input, pad_left, pad_right, pad_top, pad_bottom):
     height, width = input.shape[2], input.shape[3]
     return input[:,:, pad_top: height - pad_bottom, pad_left: width - pad_right]
+
 
 def weights_init(m):
     classname = m.__class__.__name__
@@ -64,25 +61,19 @@ def weights_init(m):
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
 
+
 def print_network(net):
     num_params = 0
     for param in net.parameters():
         num_params += param.numel()
     print(net)
     print('Total number of parameters: %d' % num_params)
+    return num_params
 
 
-def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropout=False, gpu_ids=[], skip=False, opt=None):
-    if len(gpu_ids) > 0:
-        assert(torch.cuda.is_available())
-    netG = Unet_resize_conv_v2(opt, skip)
-    if len(gpu_ids) >= 0:
-        netG.cuda(device=gpu_ids[0])
-        netG = torch.nn.DataParallel(netG, gpu_ids)
-    netG.apply(weights_init)
-    return netG
-
-
+##############################################################################
+# Discriminators
+##############################################################################
 def define_D(input_nc, ndf, which_model_netD,
              n_layers_D=3, norm='batch', use_sigmoid=False, gpu_ids=[], patch=False):
     if len(gpu_ids) > 0:
@@ -98,9 +89,6 @@ def define_D(input_nc, ndf, which_model_netD,
     return netD
 
 
-##############################################################################
-# Classes
-##############################################################################
 class NoNormDiscriminator(nn.Module):
     def __init__(self, input_nc, ndf=64, n_layers=3, use_sigmoid=False, gpu_ids=[]):
         super(NoNormDiscriminator, self).__init__()
@@ -140,11 +128,28 @@ class NoNormDiscriminator(nn.Module):
         self.model = nn.Sequential(*sequence)
 
     def forward(self, input):
-        # if len(self.gpu_ids) and isinstance(input.data, torch.cuda.FloatTensor):
-        #     return nn.parallel.data_parallel(self.model, input, self.gpu_ids)
-        # else:
         return self.model(input)
 
+
+##############################################################################
+# Generators
+##############################################################################
+def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropout=False, gpu_ids=[], skip=False, opt=None):
+    if len(gpu_ids) > 0:
+        assert(torch.cuda.is_available())
+    # Final network (+CERM+TPE): sid_unet_resize_v2
+    if opt.which_model_netG == 'sid_unet_resize_v2':
+        netG = Unet_resize_conv_v2(opt, skip)
+    if len(gpu_ids) >= 0:
+        netG.cuda(device=gpu_ids[0])
+        netG = torch.nn.DataParallel(netG, gpu_ids)
+    netG.apply(weights_init)
+    return netG
+
+
+##############################################################################
+# Final network (+CERM+TPE): sid_unet_resize_v2
+##############################################################################
 class Unet_resize_conv_v2(nn.Module):
     def __init__(self, opt, skip):
         super(Unet_resize_conv_v2, self).__init__()
@@ -156,34 +161,27 @@ class Unet_resize_conv_v2(nn.Module):
         # First stage
         if opt.tpe:
             dim = 64
-            # previous version: Conv+BN+LReLU, conv.bias=False
             self.dgcn = nn.Sequential(
                 nn.ReflectionPad2d(1),
                 nn.Conv2d(4, dim, kernel_size=3, stride=1,bias=True),
                 nn.LeakyReLU(0.2, inplace=True),
-                SynBN2d(dim) if self.opt.syn_norm else nn.BatchNorm2d(dim),
+                nn.BatchNorm2d(dim),
                 nn.ReflectionPad2d(1),
                 nn.Conv2d(dim, dim, kernel_size=3, stride=1,bias=True),
                 nn.LeakyReLU(0.2, inplace=True),
-                SynBN2d(dim) if self.opt.syn_norm else nn.BatchNorm2d(dim),
+                nn.BatchNorm2d(dim),
                 nn.ReflectionPad2d(1),
                 nn.Conv2d(dim, dim, kernel_size=3, stride=1,bias=True),
                 nn.LeakyReLU(0.2, inplace=True),
-                SynBN2d(dim) if self.opt.syn_norm else nn.BatchNorm2d(dim),
+                nn.BatchNorm2d(dim),
                 nn.ReflectionPad2d(1),
                 nn.Conv2d(dim, 3, kernel_size=3, stride=1,bias=True),
                 nn.Sigmoid())
-            # NOTE 1108
-            # from models.first_stage import net
-            # self.first_net = net().cuda()
-            
-        # self.conv1_1 = nn.Conv2d(4, 32, 3, padding=p)
         if opt.self_attention:
             if not opt.concat_gray:
                 self.conv1_1 = nn.Conv2d(3, 32, 3, padding=p)
             else:
                 self.conv1_1 = nn.Conv2d(4, 32, 3, padding=p)
-            # self.conv1_1 = nn.Conv2d(3, 32, 3, padding=p)
             self.downsample_1 = nn.MaxPool2d(2)
             self.downsample_2 = nn.MaxPool2d(2)
             self.downsample_3 = nn.MaxPool2d(2)
@@ -192,91 +190,87 @@ class Unet_resize_conv_v2(nn.Module):
             self.conv1_1 = nn.Conv2d(3, 32, 3, padding=p)
         self.LReLU1_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn1_1 = SynBN2d(32) if self.opt.syn_norm else nn.BatchNorm2d(32)
+            self.bn1_1 = nn.BatchNorm2d(32)
         self.conv1_2 = nn.Conv2d(32, 32, 3, padding=p)
         self.LReLU1_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn1_2 = SynBN2d(32) if self.opt.syn_norm else nn.BatchNorm2d(32)
+            self.bn1_2 = nn.BatchNorm2d(32)
         self.max_pool1 = nn.AvgPool2d(2) if self.opt.use_avgpool == 1 else nn.MaxPool2d(2)
 
         self.conv2_1 = nn.Conv2d(32, 64, 3, padding=p)
         self.LReLU2_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn2_1 = SynBN2d(64) if self.opt.syn_norm else nn.BatchNorm2d(64)
+            self.bn2_1 = nn.BatchNorm2d(64)
         self.conv2_2 = nn.Conv2d(64, 64, 3, padding=p)
         self.LReLU2_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn2_2 = SynBN2d(64) if self.opt.syn_norm else nn.BatchNorm2d(64)
+            self.bn2_2 = nn.BatchNorm2d(64)
         self.max_pool2 = nn.AvgPool2d(2) if self.opt.use_avgpool == 1 else nn.MaxPool2d(2)
 
         self.conv3_1 = nn.Conv2d(64, 128, 3, padding=p)
         self.LReLU3_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn3_1 = SynBN2d(128) if self.opt.syn_norm else nn.BatchNorm2d(128)
+            self.bn3_1 = nn.BatchNorm2d(128)
         self.conv3_2 = nn.Conv2d(128, 128, 3, padding=p)
         self.LReLU3_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn3_2 = SynBN2d(128) if self.opt.syn_norm else nn.BatchNorm2d(128)
+            self.bn3_2 = nn.BatchNorm2d(128)
         self.max_pool3 = nn.AvgPool2d(2) if self.opt.use_avgpool == 1 else nn.MaxPool2d(2)
 
         self.conv4_1 = nn.Conv2d(128, 256, 3, padding=p)
         self.LReLU4_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn4_1 = SynBN2d(256) if self.opt.syn_norm else nn.BatchNorm2d(256)
+            self.bn4_1 = nn.BatchNorm2d(256)
         self.conv4_2 = nn.Conv2d(256, 256, 3, padding=p)
         self.LReLU4_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn4_2 = SynBN2d(256) if self.opt.syn_norm else nn.BatchNorm2d(256)
+            self.bn4_2 = nn.BatchNorm2d(256)
         self.max_pool4 = nn.AvgPool2d(2) if self.opt.use_avgpool == 1 else nn.MaxPool2d(2)
 
         self.conv5_1 = nn.Conv2d(256, 512, 3, padding=p)
         self.LReLU5_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn5_1 = SynBN2d(512) if self.opt.syn_norm else nn.BatchNorm2d(512)
+            self.bn5_1 = nn.BatchNorm2d(512)
         self.conv5_2 = nn.Conv2d(512, 512, 3, padding=p)
         self.LReLU5_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn5_2 = SynBN2d(512) if self.opt.syn_norm else nn.BatchNorm2d(512)
+            self.bn5_2 = nn.BatchNorm2d(512)
 
-        # self.deconv5 = nn.ConvTranspose2d(512, 256, 2, stride=2)
         self.deconv5 = nn.Conv2d(512, 256, 3, padding=p)
         self.conv6_1 = nn.Conv2d(512, 256, 3, padding=p)
         self.LReLU6_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn6_1 = SynBN2d(256) if self.opt.syn_norm else nn.BatchNorm2d(256)
+            self.bn6_1 = nn.BatchNorm2d(256)
         self.conv6_2 = nn.Conv2d(256, 256, 3, padding=p)
         self.LReLU6_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn6_2 = SynBN2d(256) if self.opt.syn_norm else nn.BatchNorm2d(256)
+            self.bn6_2 = nn.BatchNorm2d(256)
 
-        # self.deconv6 = nn.ConvTranspose2d(256, 128, 2, stride=2)
         self.deconv6 = nn.Conv2d(256, 128, 3, padding=p)
         self.conv7_1 = nn.Conv2d(256, 128, 3, padding=p)
         self.LReLU7_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn7_1 = SynBN2d(128) if self.opt.syn_norm else nn.BatchNorm2d(128)
+            self.bn7_1 = nn.BatchNorm2d(128)
         self.conv7_2 = nn.Conv2d(128, 128, 3, padding=p)
         self.LReLU7_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn7_2 = SynBN2d(128) if self.opt.syn_norm else nn.BatchNorm2d(128)
+            self.bn7_2 = nn.BatchNorm2d(128)
 
-        # self.deconv7 = nn.ConvTranspose2d(128, 64, 2, stride=2)
         self.deconv7 = nn.Conv2d(128, 64, 3, padding=p)
         self.conv8_1 = nn.Conv2d(128, 64, 3, padding=p)
         self.LReLU8_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn8_1 = SynBN2d(64) if self.opt.syn_norm else nn.BatchNorm2d(64)
+            self.bn8_1 = nn.BatchNorm2d(64)
         self.conv8_2 = nn.Conv2d(64, 64, 3, padding=p)
         self.LReLU8_2 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn8_2 = SynBN2d(64) if self.opt.syn_norm else nn.BatchNorm2d(64)
+            self.bn8_2 = nn.BatchNorm2d(64)
 
-        # self.deconv8 = nn.ConvTranspose2d(64, 32, 2, stride=2)
         self.deconv8 = nn.Conv2d(64, 32, 3, padding=p)
         self.conv9_1 = nn.Conv2d(64, 32, 3, padding=p)
         self.LReLU9_1 = nn.LeakyReLU(0.2, inplace=True)
         if self.opt.use_norm == 1:
-            self.bn9_1 = SynBN2d(32) if self.opt.syn_norm else nn.BatchNorm2d(32)
+            self.bn9_1 = nn.BatchNorm2d(32)
         self.conv9_2 = nn.Conv2d(32, 32, 3, padding=p)
         self.LReLU9_2 = nn.LeakyReLU(0.2, inplace=True)
 
@@ -286,38 +280,18 @@ class Unet_resize_conv_v2(nn.Module):
             
     def forward(self, input, gray):
         flag = 0
+        # if image too large, then downsample it first, then upsample it back
         if input.size()[3] > 2200:
-            avg = nn.AvgPool2d(2)
-            input = avg(input)
-            gray = avg(gray)
+            input = F.interpolate(input, scale_factor=0.5, mode='bilinear')
+            gray = F.interpolate(gray, scale_factor=0.5, mode='bilinear')
             flag = 1
-            # pass
         input, pad_left, pad_right, pad_top, pad_bottom = pad_tensor(input)
-        # st()
         gray, pad_left, pad_right, pad_top, pad_bottom = pad_tensor(gray)
         if self.opt.tpe:
-            # whether use a new gray generated from stage 1 output.
             # if tpe is activated, then first adopt DGCN
-            # NOTE 1108
-            # im1 = (input+1)/2
-            # im2 = im1 * 0.5
-            # L1, R1, X1 = self.first_net(im1)
-            # L2, R2, X2 = self.first_net(im2)
             A_map = self.dgcn(torch.cat((input, gray), 1))
-            # NOTE 1108
-            # stage1 = torch.pow(L1, A_map) * R1
-            stage1 = torch.pow(input+1, A_map)
-            stage2_input = stage1-1
-            # update illumination constraint with previous output
-            if self.opt.i3c_again:
-                # NOTE 1112 原来stage1是input（不需要变成stage1，因为在i3c函数里边，input先去归一化了，从-1，1转换到了0，1之间）
-                gray = i3c_batch(input)
-                self.real_A_gray = gray
-            # NOTE 1112 如果没有指定不使用stage1来更新input，就用stage1来更新，其实也就是stage2_input
-            if not self.opt.not_use_stage1_as_residual:
-                input = stage2_input
-        else:
-            stage2_input = input
+            stage1 = torch.pow(input+1, A_map) - 1
+            input = stage1.clone()
         if self.opt.self_attention:
             gray_2 = self.downsample_1(gray)
             gray_3 = self.downsample_2(gray_2)
@@ -326,11 +300,11 @@ class Unet_resize_conv_v2(nn.Module):
         if self.opt.use_norm == 1:
             if self.opt.self_attention:
                 if self.opt.concat_gray:
-                    x = self.bn1_1(self.LReLU1_1(self.conv1_1(torch.cat((stage2_input, gray), 1))))
+                    x = self.bn1_1(self.LReLU1_1(self.conv1_1(torch.cat((input, gray), 1))))
                 else:
-                    x = self.bn1_1(self.LReLU1_1(self.conv1_1(stage2_input)))
+                    x = self.bn1_1(self.LReLU1_1(self.conv1_1(input)))
             else:
-                x = self.bn1_1(self.LReLU1_1(self.conv1_1(stage2_input)))
+                x = self.bn1_1(self.LReLU1_1(self.conv1_1(input)))
             conv1 = self.bn1_2(self.LReLU1_2(self.conv1_2(x)))
             x = self.max_pool1(conv1)
 
@@ -482,17 +456,51 @@ class Unet_resize_conv_v2(nn.Module):
         output = pad_tensor_back(output, pad_left, pad_right, pad_top, pad_bottom)
         latent = pad_tensor_back(latent, pad_left, pad_right, pad_top, pad_bottom)
         gray = pad_tensor_back(gray, pad_left, pad_right, pad_top, pad_bottom)
+        if self.opt.tpe:
+            stage1 = pad_tensor_back(stage1, pad_left, pad_right, pad_top, pad_bottom)
         if flag == 1:
             output = F.upsample(output, scale_factor=2, mode='bilinear')
             gray = F.upsample(gray, scale_factor=2, mode='bilinear')
             latent = F.upsample(latent, scale_factor=2, mode='bilinear')
         if self.skip:
             if self.opt.tpe:
-                # NOTE 1108
-                # return output, latent, stage1, L1, R1, R2, X1, im1
-                return output, latent, stage1
+                return output, latent, stage1, gray
             else:
                 return output, latent
         else:
             return output
         
+
+##############################################################################
+# Pre-Denoising Module (PDM)
+##############################################################################
+class PDM(nn.Module):
+    def __init__(self, num=64):
+        super(PDM, self).__init__()
+        self.net = nn.Sequential(
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(3, num, 3, 1, 0),
+            nn.ReLU(), 
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(num, num, 3, 1, 0),
+            nn.ReLU(),               
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(num, num, 3, 1, 0),
+            nn.ReLU(),               
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(num, num, 3, 1, 0),
+            nn.ReLU(),   
+            nn.ReflectionPad2d(1),
+            nn.Conv2d(num, 3, 3, 1, 0),
+        )
+        self._weight_init()
+        
+    def _weight_init(self):
+        # load pretrained weights
+        checkpoint = torch.load('pretrained_weights/pdm.pth')
+        self.load_state_dict(checkpoint)
+
+    def forward(self, input):
+        return torch.sigmoid(self.net(input))
+    
+    

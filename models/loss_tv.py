@@ -1,7 +1,7 @@
 import torch
 
 
-def tv_loss(img):
+def tv_loss(x):
     """
     Compute total variation loss.
     Inputs:
@@ -11,8 +11,12 @@ def tv_loss(img):
     - loss: PyTorch Variable holding a scalar giving the total variation loss
       for img weighted by tv_weight.
     """
-    b = img.size()[0]
-    w_variance = torch.sum(torch.pow(img[:,:,:,:-1] - img[:,:,:,1:], 2))/b
-    h_variance = torch.sum(torch.pow(img[:,:,:-1,:] - img[:,:,1:,:], 2))/b
-    loss = (h_variance + w_variance) / 2
-    return loss
+    batch_size = x.size()[0]
+    h_x = x.size()[2]
+    w_x = x.size()[3]
+    count_h =  (x.size()[2]-1) * x.size()[3]
+    count_w = x.size()[2] * (x.size()[3] - 1)
+    h_tv = torch.pow((x[:,:,1:,:]-x[:,:,:h_x-1,:]),2).sum()
+    w_tv = torch.pow((x[:,:,:,1:]-x[:,:,:,:w_x-1]),2).sum()
+    return 2*(h_tv/count_h+w_tv/count_w)/batch_size
+  

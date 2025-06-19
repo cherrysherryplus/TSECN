@@ -1,8 +1,0 @@
-visdom
-dominate
-tensorboardX
-scikit-image
-opencv-python
-lpips
-pyiqa
-natsort
